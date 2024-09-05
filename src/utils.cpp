@@ -3,6 +3,10 @@
 #include <iostream>
 #include <vector>
 
+const int INITIAL_SYNC_PERIOD = 100;     // Start by syncing every 10 paths
+const int MAX_SYNC_PERIOD = 1000;        // Never wait more than 1000 paths before syncing
+const double SYNC_INCREASE_FACTOR = 1.5; // Increase sync period by 50% each time
+
 void create_paths(std::vector<std::vector<int>> &paths, int start, int num_cities)
 {
     for (int i = 0; i < num_cities; i++)
@@ -90,6 +94,47 @@ void dfs(
     }
 }
 
+// Function to generate an initial solution using Nearest Neighbor heuristic
+std::pair<std::vector<int>, int> nearest_neighbor_tsp(std::vector<int> &distances, int num_cities)
+{
+    std::vector<int> path;
+    std::vector<bool> visited(num_cities, false);
+    int current_city = 0; // Start from city 0
+    int total_distance = 0;
+
+    path.push_back(current_city);
+    visited[current_city] = true;
+
+    for (int i = 1; i < num_cities; ++i)
+    {
+        int nearest_city = -1;
+        int min_distance = INT_MAX;
+
+        for (int j = 0; j < num_cities; ++j)
+        {
+            if (!visited[j])
+            {
+                int distance = get_distance(current_city, j, distances, num_cities);
+                if (distance < min_distance)
+                {
+                    min_distance = distance;
+                    nearest_city = j;
+                }
+            }
+        }
+
+        path.push_back(nearest_city);
+        visited[nearest_city] = true;
+        total_distance += min_distance;
+        current_city = nearest_city;
+    }
+
+    // Add distance back to the starting city
+    total_distance += get_distance(current_city, 0, distances, num_cities);
+
+    return {path, total_distance};
+}
+
 int read_file(const std::string &filename, std::vector<int> &distances)
 {
     int num_cities;
@@ -111,6 +156,49 @@ int read_file(const std::string &filename, std::vector<int> &distances)
             infile >> distance;
             distances[i * num_cities + j] = distance;
             distances[j * num_cities + i] = distance;
+        }
+    }
+
+    infile.close();
+    return num_cities;
+}
+
+int read_tsplib_matrix(const std::string &filename, std::vector<int> &distances)
+{
+    std::ifstream infile(filename);
+    if (!infile.is_open())
+    {
+        std::cerr << "Error: Unable to open file." << std::endl;
+        return 0;
+    }
+
+    std::string line;
+    int num_cities = 0;
+
+    // Parse the file header to get the number of cities (DIMENSION)
+    while (std::getline(infile, line))
+    {
+        if (line.substr(0, 9) == "DIMENSION")
+        {
+            num_cities = std::stoi(line.substr(11));
+        }
+        else if (line == "EDGE_WEIGHT_SECTION")
+        {
+            break;
+        }
+    }
+
+    distances.resize(num_cities * num_cities, 0);
+
+    // Read the lower diagonal row of the distance matrix
+    for (int i = 0; i < num_cities; i++)
+    {
+        for (int j = 0; j <= i; j++)
+        {
+            int distance;
+            infile >> distance;
+            distances[i * num_cities + j] = distance;
+            distances[j * num_cities + i] = distance; // Symmetric TSP
         }
     }
 

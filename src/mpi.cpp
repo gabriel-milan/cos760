@@ -1,19 +1,27 @@
 #include <algorithm>
-#include <chrono>
 #include <climits>
 #include <cstring>
-#include <fstream>
 #include <random>
-#include <thread>
-#include <mpi.h>
 #include <unistd.h>
+#include <mpi.h>
 #include "utils.h"
+
+int min_distance = INT_MAX;
+std::vector<int> min_path;
 
 std::vector<int> distances;
 int num_cities;
 
 int main(int argc, char *argv[])
 {
+    int rank, size;
+    MPI_Init(&argc, &argv);
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    double start_time, end_time, global_start_time, global_end_time;
+    global_start_time = MPI_Wtime();
+    start_time = MPI_Wtime();
 
     std::string input_filename;
     std::string logs_filename;
@@ -24,19 +32,20 @@ int main(int argc, char *argv[])
     }
     else
     {
-        std::cout << "Usage: " << argv[0] << " <input_data_filename> <logs_filename>" << std::endl;
+        if (rank == 0)
+        {
+            std::cout << "Usage: " << argv[0] << " <input_data_filename> <logs_filename>" << std::endl;
+        }
+        MPI_Finalize();
         return 0;
     }
 
-    // Clear logs file
-    std::ofstream logs_file(logs_filename, std::ios::out);
-    logs_file.close();
-
-    // Initialize MPI
-    MPI_Init(NULL, NULL);
-    int rank, num_procs;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &num_procs);
+    // Clear logs file (only on rank 0)
+    if (rank == 0)
+    {
+        std::ofstream logs_file(logs_filename, std::ios::out);
+        logs_file.close();
+    }
 
     // Get hostname
     std::string hostname;
@@ -52,62 +61,77 @@ int main(int argc, char *argv[])
         hostname = "Unknown";
     }
 
-    // Define variables
-    int buffer;
-    double global_start_time = MPI_Wtime();
-    int local_min_distance = INT_MAX;
-    int global_min_distance;
-    std::vector<int> local_min_path;
+    // Setup: read input file (all processes read the file)
+    num_cities = read_tsplib_matrix(input_filename, distances);
+
+    // Set starting city
+    int first_city = 0;
+
+    // Create all possible pre-paths to be explored and shuffle them
     std::vector<std::vector<int>> paths;
+    create_paths(paths, first_city, num_cities);
 
-    double start_setup = MPI_Wtime();
-    // Setup: read input file
-    num_cities = read_file(input_filename, distances);
-
-    // Setup: Generate random starting city
-    int first_city;
+    // Only rank 0 shuffles the paths
     if (rank == 0)
     {
         std::random_device rd;
         std::mt19937 gen(rd());
-        std::uniform_int_distribution<> dis(0, num_cities - 1);
-        first_city = 0;
+        std::shuffle(paths.begin(), paths.end(), gen);
     }
-    double end_setup = MPI_Wtime();
-    log_event(logs_filename, "SETUP", hostname, rank, start_setup, end_setup);
+    end_time = MPI_Wtime();
+    log_event(logs_filename, "SETUP", hostname, rank, start_time, end_time);
 
-    // Communication: Broadcast the starting city
-    double start_broadcast_starting_city = MPI_Wtime();
-    MPI_Bcast(&first_city, 1, MPI_INT, 0, MPI_COMM_WORLD);
-    double end_broadcast_starting_city = MPI_Wtime();
-    log_event(logs_filename, "COMMUNICATION", hostname, rank, start_broadcast_starting_city, end_broadcast_starting_city);
+    // Broadcast the shuffled paths to all processes
+    start_time = MPI_Wtime();
+    int paths_size = paths.size();
+    MPI_Bcast(&paths_size, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
-    // Computation: Create all possible pre-paths to be explored and shuffle them
-    double start_prepaths = MPI_Wtime();
-    create_paths(paths, first_city, num_cities);
-    std::mt19937 g(num_procs);
-    std::shuffle(paths.begin(), paths.end(), g);
-    double end_prepaths = MPI_Wtime();
-    log_event(logs_filename, "COMPUTATION", hostname, rank, start_prepaths, end_prepaths);
-
-    // Orchestration: Divide the pre-paths between the processes
-    double start_divide_prepaths = MPI_Wtime();
-    int chunk = paths.size() / num_procs;
-    int start = rank * chunk;
-    int end = (rank + 1) * chunk - 1;
-    int rest = paths.size() % num_procs;
-    int iter = 0;
-    if (rank == num_procs - 1)
+    if (rank != 0)
     {
-        end = paths.size() - 1;
+        paths.resize(paths_size);
     }
-    double end_divide_prepaths = MPI_Wtime();
-    log_event(logs_filename, "ORCHESTRATION", hostname, rank, start_divide_prepaths, end_divide_prepaths);
 
-    // Explore the pre-paths assigned to the process
-    for (int i = start; i <= end; i++)
+    for (int i = 0; i < paths_size; i++)
     {
-        double start_dfs = MPI_Wtime();
+        int path_size = paths[i].size();
+        MPI_Bcast(&path_size, 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+        if (rank != 0)
+        {
+            paths[i].resize(path_size);
+        }
+
+        MPI_Bcast(paths[i].data(), path_size, MPI_INT, 0, MPI_COMM_WORLD);
+    }
+
+    end_time = MPI_Wtime();
+    log_event(logs_filename, "COMMUNICATION", hostname, rank, start_time, end_time);
+
+    // Generate initial solution on all processes
+    start_time = MPI_Wtime();
+    auto [initial_path, initial_distance] = nearest_neighbor_tsp(distances, num_cities);
+    int local_min_distance = initial_distance;
+    std::vector<int> local_min_path = initial_path;
+    end_time = MPI_Wtime();
+    log_event(logs_filename, "COMPUTATION", hostname, rank, start_time, end_time);
+
+    // Distribute paths among processes
+    start_time = MPI_Wtime();
+    int paths_per_process = paths.size() / size;
+    int start_index = rank * paths_per_process;
+    int end_index = (rank == size - 1) ? paths.size() : (rank + 1) * paths_per_process;
+    end_time = MPI_Wtime();
+    log_event(logs_filename, "ORCHESTRATION", hostname, rank, start_time, end_time);
+
+    // Explore assigned paths
+    int paths_processed = 0;
+    int current_sync_period = INITIAL_SYNC_PERIOD;
+    int paths_since_last_sync = 0;
+
+    for (int i = start_index; i < end_index; i++)
+    {
+        start_time = MPI_Wtime();
+
         std::vector<int> path = paths[i];
         std::vector<int> visited(num_cities, false);
         int curr_distance = 0;
@@ -122,94 +146,101 @@ int main(int argc, char *argv[])
             visited[path[j]] = true;
         }
 
-        // Explore the pre-path
+        // Use local_min_distance as the initial upper bound
         dfs(path, visited, curr_distance, local_min_distance, local_min_path, distances, num_cities);
 
-        double end_dfs = MPI_Wtime();
-        log_event(logs_filename, "COMPUTATION", hostname, rank, start_dfs, end_dfs);
+        end_time = MPI_Wtime();
+        log_event(logs_filename, "COMPUTATION", hostname, rank, start_time, end_time);
 
-        if (i < (int)paths.size() - rest - 1 && iter % 720 == 72)
+        paths_processed++;
+
+        paths_since_last_sync++;
+
+        if (paths_since_last_sync >= current_sync_period)
         {
-            double start_sync = MPI_Wtime();
-            // Do a blocking communication to update the local_min_distance
-            buffer = local_min_distance;
-            MPI_Allreduce(&buffer, &global_min_distance, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
-            // Update the local_min_distance
-            if (global_min_distance < local_min_distance)
-            {
-                local_min_distance = global_min_distance;
-            }
-            double end_sync = MPI_Wtime();
-            log_event(logs_filename, "COMMUNICATION", hostname, rank, start_sync, end_sync);
+            // Perform synchronization
+            start_time = MPI_Wtime();
+            int local_min = local_min_distance;
+            MPI_Allreduce(&local_min, &min_distance, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+            end_time = MPI_Wtime();
+
+            // Log the communication event
+            log_event(logs_filename, "COMMUNICATION", hostname, rank, start_time, end_time);
+
+            // Increase the sync period for next time
+            current_sync_period = std::min(
+                static_cast<int>(current_sync_period * SYNC_INCREASE_FACTOR),
+                MAX_SYNC_PERIOD);
+
+            paths_since_last_sync = 0;
         }
-
-        iter++;
     }
 
-    // Recalculate the local_min_distance for the local_min_path
-    double start_local_min_distance = MPI_Wtime();
-    local_min_distance = 0;
-    for (int j = 0; j < num_cities - 1; j++)
+    // Ensure one final sync at the end
+    if (paths_since_last_sync > 0)
     {
-        local_min_distance += get_distance(local_min_path[j], local_min_path[j + 1], distances, num_cities);
-    }
-    local_min_distance += get_distance(local_min_path[num_cities - 1], local_min_path[0], distances, num_cities);
-    double end_local_min_distance = MPI_Wtime();
-    log_event(logs_filename, "COMPUTATION", hostname, rank, start_local_min_distance, end_local_min_distance);
+        start_time = MPI_Wtime();
+        int local_min = local_min_distance;
+        MPI_Allreduce(&local_min, &min_distance, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+        end_time = MPI_Wtime();
 
-    double start_final_sync = MPI_Wtime();
-    // Gather minimum distances and paths from all ranks
-    std::vector<int> global_min_path;
+        log_event(logs_filename, "COMMUNICATION", hostname, rank, start_time, end_time);
+    }
+
+    // Final gather of results from all processes
+    start_time = MPI_Wtime();
+    struct
+    {
+        int distance;
+        int rank;
+    } local_result, global_result;
+
+    local_result.distance = local_min_distance;
+    local_result.rank = rank;
+
+    MPI_Allreduce(&local_result, &global_result, 1, MPI_2INT, MPI_MINLOC, MPI_COMM_WORLD);
+
+    int path_size = num_cities;
+    // Broadcast the best path
+    if (rank == global_result.rank)
+    {
+        path_size = local_min_path.size();
+        min_path = local_min_path;
+    }
+
+    // Broadcast the size of the best path
+    MPI_Bcast(&path_size, 1, MPI_INT, global_result.rank, MPI_COMM_WORLD);
+
+    // Resize min_path on all processes to receive the best path
+    min_path.resize(path_size);
+
+    // Broadcast the best path
+    MPI_Bcast(min_path.data(), path_size, MPI_INT, global_result.rank, MPI_COMM_WORLD);
+
+    // Broadcast the best distance
+    MPI_Bcast(&min_distance, 1, MPI_INT, global_result.rank, MPI_COMM_WORLD);
+
+    end_time = MPI_Wtime();
+    log_event(logs_filename, "COMMUNICATION", hostname, rank, start_time, end_time);
+
+    global_end_time = MPI_Wtime();
+    double total_time = global_end_time - global_start_time;
+
+    // Print the final results (only on rank 0)
     if (rank == 0)
     {
-        global_min_path.resize(num_cities);
-    }
-    int *min_distances = new int[num_procs];
-    MPI_Allgather(&local_min_distance, 1, MPI_INT, min_distances, 1, MPI_INT, MPI_COMM_WORLD);
-
-    // Find rank with global minimum distance
-    int global_min_rank = std::distance(min_distances, std::min_element(min_distances, min_distances + num_procs));
-
-    // Receive global minimum path from rank with global minimum distance
-    if (rank == 0)
-    {
-        if (global_min_rank != 0)
-        {
-            MPI_Recv(global_min_path.data(), num_cities, MPI_INT, global_min_rank, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        }
-        else
-        {
-            global_min_path = local_min_path;
-        }
-        global_min_distance = min_distances[global_min_rank];
-    }
-    else if (rank == global_min_rank)
-    {
-        MPI_Send(local_min_path.data(), num_cities, MPI_INT, 0, 0, MPI_COMM_WORLD);
-    }
-
-    // Free min_distances array
-    delete[] min_distances;
-    double end_final_sync = MPI_Wtime();
-    log_event(logs_filename, "COMMUNICATION", hostname, rank, start_final_sync, end_final_sync);
-
-    // Print final results
-    if (rank == 0)
-    {
-        double global_end_time = MPI_Wtime();
         std::cout << "---------------------------------------------" << std::endl;
-        std::cout << "Time: " << global_end_time - global_start_time << std::endl;
-        std::cout << "Minimum distance: " << global_min_distance << std::endl;
+        std::cout << "Total execution time: " << total_time << " seconds" << std::endl;
+        std::cout << "Minimum distance: " << min_distance << std::endl;
         std::cout << "Minimum path: ";
-        for (int i = 0; i < (int)global_min_path.size(); i++)
+        for (int i = 0; i < (int)min_path.size(); i++)
         {
-            std::cout << global_min_path[i] + 1 << ", ";
+            std::cout << min_path[i] + 1 << " "; // +1 because cities are typically 1-indexed in output
         }
         std::cout << std::endl;
         std::cout << "---------------------------------------------" << std::endl;
     }
 
     MPI_Finalize();
-
     return 0;
 }

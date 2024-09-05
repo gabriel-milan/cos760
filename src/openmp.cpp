@@ -1,17 +1,23 @@
 #include <algorithm>
 #include <climits>
 #include <cstring>
-#include <fstream>
 #include <random>
-#include <omp.h>
 #include <unistd.h>
+#include <omp.h>
 #include "utils.h"
+
+int min_distance = INT_MAX;
+std::vector<int> min_path;
 
 std::vector<int> distances;
 int num_cities;
 
 int main(int argc, char *argv[])
 {
+    double global_start_time, global_end_time;
+    global_start_time = omp_get_wtime();
+    double start_time = omp_get_wtime();
+
     std::string input_filename;
     std::string logs_filename;
     if (argc == 3)
@@ -43,58 +49,46 @@ int main(int argc, char *argv[])
         hostname = "Unknown";
     }
 
-    // Initialize OpenMP
-    int num_threads = omp_get_max_threads();
-    omp_set_num_threads(num_threads); // Set number of threads based on available hardware
-
-    // Define variables
-    double global_start_time = omp_get_wtime();
-    int global_min_distance = INT_MAX;
-    std::vector<int> global_min_path;
-    std::vector<std::vector<int>> paths;
-
-    double start_setup = omp_get_wtime();
     // Setup: read input file
-    num_cities = read_file(input_filename, distances); // read the file
+    num_cities = read_tsplib_matrix(input_filename, distances);
 
-    // Setup: Generate random starting city
+    // Set starting city
+    int first_city = 0;
+
+    // Create all possible pre-paths to be explored and shuffle them
+    std::vector<std::vector<int>> paths;
+    create_paths(paths, first_city, num_cities);
+
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dis(0, num_cities - 1);
-    int first_city = 0;
-    double end_setup = omp_get_wtime();
-    log_event(logs_filename, "SETUP", hostname, omp_get_thread_num(), start_setup, end_setup);
+    std::shuffle(paths.begin(), paths.end(), gen);
 
-    // Computation: Create all possible pre-paths to be explored and shuffle them
-    double start_prepaths = omp_get_wtime();
-    create_paths(paths, first_city, num_cities);
-    std::mt19937 g(num_threads);
-    std::shuffle(paths.begin(), paths.end(), g);
-    double end_prepaths = omp_get_wtime();
-    log_event(logs_filename, "COMPUTATION", hostname, omp_get_thread_num(), start_prepaths, end_prepaths);
+    int total_paths = paths.size(); // Define total_paths here
 
+    double end_time = omp_get_wtime();
+    log_event(logs_filename, "SETUP", hostname, 0, start_time, end_time);
+
+// Explore all possible pre-paths in parallel
 #pragma omp parallel
     {
-        // Orchestration: Divide the pre-paths among the threads
-        double start_divide_prepaths = omp_get_wtime();
-        int chunk = paths.size() / num_threads;
-        int rest = paths.size() % num_threads;
-        int local_min_distance = INT_MAX;
-        std::vector<int> local_min_path;
-        int thread_number = omp_get_thread_num();
-        int start = thread_number * chunk;
-        int end = (thread_number + 1) * chunk - 1;
-        int iter = 0;
-        if (thread_number == num_threads - 1)
+        // Compute initial minimum distance and path
+        int thread_id = omp_get_thread_num();
+        double start_time = omp_get_wtime();
+        auto [initial_path, initial_distance] = nearest_neighbor_tsp(distances, num_cities);
+        int thread_min_distance = initial_distance;
+        std::vector<int> thread_min_path = initial_path;
+        double end_time = omp_get_wtime();
+        log_event(logs_filename, "COMPUTATION", hostname, thread_id, start_time, end_time);
+
+        int paths_processed = 0;
+        int current_sync_period = INITIAL_SYNC_PERIOD;
+        int paths_since_last_sync = 0;
+
+#pragma omp for schedule(dynamic)
+        for (int i = 0; i < total_paths; i++)
         {
-            end = paths.size() - 1;
-        }
-        double end_divide_prepaths = omp_get_wtime();
-        log_event(logs_filename, "ORCHESTRATION", hostname, thread_number, start_divide_prepaths, end_divide_prepaths);
-#pragma omp for
-        for (int i = start; i <= end; i++)
-        {
-            double start_dfs = omp_get_wtime();
+            double computation_start = omp_get_wtime();
+
             std::vector<int> path = paths[i];
             std::vector<int> visited(num_cities, false);
             int curr_distance = 0;
@@ -109,64 +103,65 @@ int main(int argc, char *argv[])
                 visited[path[j]] = true;
             }
 
-            // Explore the pre-path
-            dfs(path, visited, curr_distance, local_min_distance, local_min_path, distances, num_cities);
+            // Explore the current pre-path
+            dfs(path, visited, curr_distance, thread_min_distance, thread_min_path, distances, num_cities);
 
-            double end_dfs = omp_get_wtime();
-            log_event(logs_filename, "COMPUTATION", hostname, thread_number, start_dfs, end_dfs);
+            double computation_end = omp_get_wtime();
+            log_event(logs_filename, "COMPUTATION", hostname, thread_id, computation_start, computation_end);
 
-            // Update global minimum distance every once in a while
-            if (i < (int)paths.size() - rest - 1 && iter % 720 == 72)
+            paths_processed++;
+
+            paths_since_last_sync++;
+
+            // Periodic synchronization based on calculated update frequency
+            if (paths_since_last_sync >= current_sync_period)
             {
-                double start_sync = omp_get_wtime();
+                double communication_start = omp_get_wtime();
 #pragma omp critical
                 {
-                    if (local_min_distance < global_min_distance)
+                    if (thread_min_distance < min_distance)
                     {
-                        global_min_distance = local_min_distance;
-                        global_min_path = local_min_path;
+                        min_distance = thread_min_distance;
+                        min_path = thread_min_path;
                     }
                 }
-                double end_sync = omp_get_wtime();
-                log_event(logs_filename, "COMMUNICATION", hostname, thread_number, start_sync, end_sync);
+                double communication_end = omp_get_wtime();
+                log_event(logs_filename, "COMMUNICATION", hostname, thread_id, communication_start, communication_end);
+
+                // Increase the sync period for next time
+                current_sync_period = std::min(
+                    static_cast<int>(current_sync_period * SYNC_INCREASE_FACTOR),
+                    MAX_SYNC_PERIOD);
+
+                paths_since_last_sync = 0;
             }
-
-            iter++;
         }
 
-        // Recalculate the local_min_distance for the local_min_path
-        double start_local_min_distance = omp_get_wtime();
-        local_min_distance = 0;
-        for (int j = 0; j < num_cities - 1; j++)
-        {
-            local_min_distance += get_distance(local_min_path[j], local_min_path[j + 1], distances, num_cities);
-        }
-        local_min_distance += get_distance(local_min_path[num_cities - 1], local_min_path[0], distances, num_cities);
-        double end_local_min_distance = omp_get_wtime();
-        log_event(logs_filename, "COMPUTATION", hostname, thread_number, start_local_min_distance, end_local_min_distance);
-
-        double start_final_sync = omp_get_wtime();
+        // Final update of global minimum
+        double communication_start = omp_get_wtime();
 #pragma omp critical
         {
-            if (local_min_distance < global_min_distance)
+            if (thread_min_distance < min_distance)
             {
-                global_min_distance = local_min_distance;
-                global_min_path = local_min_path;
+                min_distance = thread_min_distance;
+                min_path = thread_min_path;
             }
         }
-        double end_final_sync = omp_get_wtime();
-        log_event(logs_filename, "COMMUNICATION", hostname, thread_number, start_final_sync, end_final_sync);
+        double communication_end = omp_get_wtime();
+        log_event(logs_filename, "COMMUNICATION", hostname, thread_id, communication_start, communication_end);
     }
 
-    // Print final results
-    double global_end_time = omp_get_wtime();
+    global_end_time = omp_get_wtime();
+    double elapsed_time = global_end_time - global_start_time;
+
+    // Print the final results
     std::cout << "---------------------------------------------" << std::endl;
-    std::cout << "Time: " << global_end_time - global_start_time << std::endl;
-    std::cout << "Minimum distance: " << global_min_distance << std::endl;
+    std::cout << "Time: " << elapsed_time << " seconds" << std::endl;
+    std::cout << "Minimum distance: " << min_distance << std::endl;
     std::cout << "Minimum path: ";
-    for (int i = 0; i < (int)global_min_path.size(); i++)
+    for (int i = 0; i < (int)min_path.size(); i++)
     {
-        std::cout << global_min_path[i] + 1 << ", ";
+        std::cout << min_path[i] + 1 << ", ";
     }
     std::cout << std::endl;
     std::cout << "---------------------------------------------" << std::endl;

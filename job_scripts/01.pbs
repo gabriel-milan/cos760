@@ -1,0 +1,47 @@
+#!/bin/bash
+#PBS -N cos760_01
+#PBS -l select=1:ncpus=48
+#PBS -l walltime=24:00:00
+#PBS -j oe
+#PBS -V
+
+# Load modules
+module load intel/2019.4
+
+# Change directory
+cd ${PBS_O_WORKDIR}
+
+# TODO: review code below
+# Run sequential code 3 times in the background
+for i in {1..3}; do
+    ./my_sequential_code >> sequential_output.txt &
+done
+
+# Run OpenMP code with 2 threads, 3 times in the background
+export OMP_NUM_THREADS=2
+for i in {1..3}; do
+    ./my_openmp_code >> openmp_2_threads_output.txt &
+done
+
+# Run MPI code with 2 processes, 3 times in the background
+for i in {1..3}; do
+    mpirun -np 2 ./my_mpi_code >> mpi_2_procs_output.txt &
+done
+
+# Run OpenMP code with 4 threads, 3 times in the background
+export OMP_NUM_THREADS=4
+for i in {1..3}; do
+    ./my_openmp_code >> openmp_4_threads_output.txt &
+done
+
+# Run MPI code with 4 processes, 3 times in the background
+for i in {1..3}; do
+    mpirun -np 4 ./my_mpi_code >> mpi_4_procs_output.txt &
+done
+
+# Run OpenMP code with 8 threads once in the background
+export OMP_NUM_THREADS=8
+./my_openmp_code >> openmp_8_threads_output.txt &
+
+# Wait for all background processes to finish
+wait

@@ -1,0 +1,16 @@
+#!/bin/bash
+#PBS -N cos760_07
+#PBS -l select=1:ncpus=6:mpiprocs=6
+#PBS -l walltime=24:00:00
+#PBS -j oe
+#PBS -V
+
+# Load modules
+module load intel/2019.4
+
+# Change directory
+cd ${PBS_O_WORKDIR}
+
+# TODO: review code below
+# Run the MPI program with 24 processes across 4 nodes
+mpirun -np 24 -ppn 6 ./my_mpi_code

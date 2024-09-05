@@ -16,6 +16,9 @@ int main(int argc, char *argv[])
     struct timespec global_start, global_end;
     struct timespec tmp_start, tmp_end;
     double tmp_start_seconds, tmp_end_seconds;
+    clock_gettime(CLOCK_MONOTONIC, &global_start);
+    clock_gettime(CLOCK_MONOTONIC, &tmp_start);
+
     std::string input_filename;
     std::string logs_filename;
     if (argc == 3)
@@ -47,26 +50,30 @@ int main(int argc, char *argv[])
         hostname = "Unknown";
     }
 
-    clock_gettime(CLOCK_MONOTONIC, &tmp_start);
     // Setup: read input file
-    num_cities = read_file(input_filename, distances);
-    clock_gettime(CLOCK_MONOTONIC, &global_start);
+    num_cities = read_tsplib_matrix(input_filename, distances);
 
-    // Generate random starting city
+    // Set starting city
+    int first_city = 0;
+
+    // Create all possible pre-paths to be explored and shuffle them
+    std::vector<std::vector<int>> paths;
+    create_paths(paths, first_city, num_cities);
+
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dis(0, num_cities - 1);
-    int first_city = 0;
+    std::shuffle(paths.begin(), paths.end(), gen);
+
     clock_gettime(CLOCK_MONOTONIC, &tmp_end);
     tmp_start_seconds = tmp_start.tv_sec + tmp_start.tv_nsec / 1e9;
     tmp_end_seconds = tmp_end.tv_sec + tmp_end.tv_nsec / 1e9;
     log_event(logs_filename, "SETUP", hostname, 0, tmp_start_seconds, tmp_end_seconds);
 
-    // Create all possible pre-paths to be explored and shuffle them
+    // Compute initial minimum distance and path
     clock_gettime(CLOCK_MONOTONIC, &tmp_start);
-    std::vector<std::vector<int>> paths;
-    create_paths(paths, first_city, num_cities);
-    std::shuffle(paths.begin(), paths.end(), gen);
+    auto [initial_path, initial_distance] = nearest_neighbor_tsp(distances, num_cities);
+    min_distance = initial_distance;
+    min_path = initial_path;
     clock_gettime(CLOCK_MONOTONIC, &tmp_end);
     tmp_start_seconds = tmp_start.tv_sec + tmp_start.tv_nsec / 1e9;
     tmp_end_seconds = tmp_end.tv_sec + tmp_end.tv_nsec / 1e9;
