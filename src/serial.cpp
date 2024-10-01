@@ -71,7 +71,9 @@ int main(int argc, char *argv[])
 
     // Compute initial minimum distance and path
     clock_gettime(CLOCK_MONOTONIC, &tmp_start);
-    auto [initial_path, initial_distance] = nearest_neighbor_tsp(distances, num_cities);
+    std::pair<std::vector<int>, int> result = nearest_neighbor_tsp(distances, num_cities);
+    std::vector<int> initial_path = result.first;
+    int initial_distance = result.second;
     min_distance = initial_distance;
     min_path = initial_path;
     clock_gettime(CLOCK_MONOTONIC, &tmp_end);

@@ -74,7 +74,9 @@ int main(int argc, char *argv[])
         // Compute initial minimum distance and path
         int thread_id = omp_get_thread_num();
         double start_time = omp_get_wtime();
-        auto [initial_path, initial_distance] = nearest_neighbor_tsp(distances, num_cities);
+        std::pair<std::vector<int>, int> result = nearest_neighbor_tsp(distances, num_cities);
+        std::vector<int> initial_path = result.first;
+        int initial_distance = result.second;
         int thread_min_distance = initial_distance;
         std::vector<int> thread_min_path = initial_path;
         double end_time = omp_get_wtime();

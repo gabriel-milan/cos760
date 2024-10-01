@@ -109,7 +109,9 @@ int main(int argc, char *argv[])
 
     // Generate initial solution on all processes
     start_time = MPI_Wtime();
-    auto [initial_path, initial_distance] = nearest_neighbor_tsp(distances, num_cities);
+    std::pair<std::vector<int>, int> result = nearest_neighbor_tsp(distances, num_cities);
+    std::vector<int> initial_path = result.first;
+    int initial_distance = result.second;
     int local_min_distance = initial_distance;
     std::vector<int> local_min_path = initial_path;
     end_time = MPI_Wtime();

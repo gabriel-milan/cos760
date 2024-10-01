@@ -1,6 +1,6 @@
 CC = g++
 MPICC = mpicxx
-CFLAGS = -Wall -O2
+CFLAGS = -Wall -O2 -std=c++11
 OMPFLAGS = -fopenmp
 TARGETS = serial mpi openmp
 
