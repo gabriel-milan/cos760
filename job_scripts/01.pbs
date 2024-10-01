@@ -43,10 +43,7 @@ done
 
 # Run OpenMP code with 8 threads once in the background
 export OMP_NUM_THREADS=8
-./openmp data/tsplib/gr17.tsp ${HOME}/logs/log_openmp_8_threads.csv &
+./openmp data/tsplib/gr17.tsp ${HOME}/logs/log_openmp_8_threads_1.csv &
 
 # Wait for all background processes to finish
 wait
-
-# Move logs to the home logs directory
-mv ${HOME}/logs/*.csv ${HOME}/logs

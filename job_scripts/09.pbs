@@ -1,6 +1,6 @@
 #!/bin/bash
-#PBS -N cos760_07
-#PBS -l select=1:ncpus=24
+#PBS -N cos760_09
+#PBS -l select=1:ncpus=48
 #PBS -l walltime=00:30:00
 #PBS -j oe
 #PBS -V
@@ -14,9 +14,8 @@ cd ${PBS_O_WORKDIR}
 # Make sure that the logs directory is created before running the job
 mkdir -p ${HOME}/logs
 
-# Run OpenMP code with 24 threads, 2 times in the background
-export OMP_NUM_THREADS=24
-./openmp data/tsplib/gr17.tsp ${HOME}/logs/log_openmp_24_threads_3.csv 
+# Run MPI code with 48 processes, once the background
+mpirun -np 48 ./mpi data/tsplib/gr17.tsp ${HOME}/logs/log_mpi_48_procs_2.csv &
 
 # Wait for all background processes to finish
 wait
