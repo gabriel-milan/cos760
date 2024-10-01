@@ -14,6 +14,7 @@ FACECOLOR_DICT = {
     "COMPUTATION": "green",
 }
 
+HOSTNAME_COLOR_DICT = {}  # This will store the colors for each hostname
 
 def read_results(file_path: str | Path) -> pd.DataFrame:
     df = pd.read_csv(
@@ -26,13 +27,28 @@ def read_results(file_path: str | Path) -> pd.DataFrame:
     df["end"] -= min_time
     return df[df["description"].isin(FACECOLOR_DICT.keys())]
 
+def remap_threads(df: pd.DataFrame) -> pd.DataFrame:
+    # Group threads by hostname
+    hostname_groups = df.groupby("hostname")["thread_id"].unique()
+    
+    # Create a mapping for new thread ids
+    remap_dict = {}
+    new_thread_id = 0
+    for hostname, threads in hostname_groups.items():
+        for thread in sorted(threads):  # Sort threads to keep the original order within each hostname
+            remap_dict[thread] = new_thread_id
+            new_thread_id += 1
+    
+    # Apply the remapping to the DataFrame
+    df["thread_id"] = df["thread_id"].map(remap_dict)
+    return df
 
 def create_bar_data(row):
     return {
         'rect': Rectangle((row["start"], row["thread_id"] - 0.45), row["end"] - row["start"], 0.9),
-        'facecolor': FACECOLOR_DICT[row["description"]]
+        'facecolor': FACECOLOR_DICT[row["description"]],
+        'hostname': row['hostname']
     }
-
 
 if __name__ == "__main__":
     if len(argv) != 2:
@@ -46,10 +62,12 @@ if __name__ == "__main__":
 
     start_time = time.time()
     results = read_results(logs_file)
-    print(f"Time to read results: {time.time() - start_time:.2f} seconds")
+    results = remap_threads(results)  # Remap the threads to group by hostname
+    print(f"Time to read and remap results: {time.time() - start_time:.2f} seconds")
 
-    # Count the number of unique thread IDs
+    # Count the number of unique thread IDs after remapping
     num_threads = results["thread_id"].nunique()
+    unique_hostnames = results["hostname"].unique()
 
     fig, ax = plt.subplots()
 
@@ -75,7 +93,16 @@ if __name__ == "__main__":
     ax.set_xlim(0, max_time)
     ax.set_xlabel("Time (seconds)")
 
-    # Add a legend below the plot
+    # Add a hostname color-coded legend on the y-axis
+    for hostname in unique_hostnames:
+        if hostname not in HOSTNAME_COLOR_DICT:
+            HOSTNAME_COLOR_DICT[hostname] = plt.cm.Dark2(len(HOSTNAME_COLOR_DICT) % 8)  # Using Dark2 colormap
+
+    for thread_id in range(num_threads):
+        hostname = results[results["thread_id"] == thread_id]["hostname"].iloc[0]
+        ax.get_yticklabels()[thread_id].set_color(HOSTNAME_COLOR_DICT[hostname])
+
+    # Add a legend for the descriptions below the plot
     legend_elements = [plt.Rectangle((0, 0), 1, 1, facecolor=color, edgecolor='none', label=desc)
                        for desc, color in FACECOLOR_DICT.items()]
     ax.legend(handles=legend_elements, loc='upper center', bbox_to_anchor=(0.5, -0.05),
