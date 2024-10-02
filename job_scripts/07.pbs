@@ -14,9 +14,8 @@ cd ${PBS_O_WORKDIR}
 # Make sure that the logs directory is created before running the job
 mkdir -p ${HOME}/logs
 
-# Run OpenMP code with 24 threads, 2 times in the background
-export OMP_NUM_THREADS=24
-./openmp data/tsplib/gr17.tsp ${HOME}/logs/log_openmp_24_threads_3.csv 
+# Run MPI code with 16 processes, once in the background
+mpirun -np 16 ./mpi data/tsplib/gr17.tsp ${HOME}/logs/mpi_t16_n1_r3 &
 
 # Wait for all background processes to finish
 wait
